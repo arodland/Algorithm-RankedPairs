@@ -20,41 +20,19 @@ has 'bundles' => (
   default => sub { [] },
 );
 
-has 'blocs' => (
-  is => 'ro',
-  isa => Map[Str, Map[Str, Int]],
-  lazy => 1,
-  builder => '_compute_blocs',
-  clearer => '_clear_blocs',
-);
-
-has 'tiebreak' => (
-  is => 'ro',
-  isa => Map[Str, Int],
-  lazy => 1,
-  builder => '_compute_tiebreak',
-  clearer => '_clear_tiebreak',
-);
-
 sub add_candidate {
   my ($self, $candidate) = @_;
   push @{ $self->candidates }, $candidate;
-  $self->_clear_blocs;
-  $self->_clear_tiebreak;
 }
 
 sub add_candidates {
   my ($self, @candidates) = @_;
   push @{ shift->candidates }, @candidates;
-  $self->_clear_blocs;
-  $self->_clear_tiebreak;
 }
 
 sub vote {
   my ($self, $ballot, $count) = @_;
   push @{ $self->bundles }, [ $count, $ballot ];
-  $self->_clear_blocs;
-  $self->_clear_tiebreak;
 }
 
 sub _ballot_to_preferences {
@@ -182,7 +160,7 @@ sub _compute_tiebreak {
 sub compute {
   my $self = shift;
   my $candidates = $self->candidates;
-  my $blocs = $self->blocs;
+  my $blocs = $self->_compute_blocs;
 
   my @majorities;
   for my $x (@$candidates) {
@@ -193,15 +171,20 @@ sub compute {
     }
   }
 
+  my $tb;
+  my $tiebreak = sub {
+    return ($tb ||= $self->_compute_tiebreak);
+  };
+
   my $compare_majority = sub {
     my ($x, $y, $z, $w) = (@$a, @$b);
     ($blocs->{$x}{$y} <=> $blocs->{$z}{$w})
         ||
     ($blocs->{$w}{$z} <=> $blocs->{$y}{$x})
         ||
-    ($self->tiebreak->{$w} <=> $self->tiebreak->{$y})
+    ($tiebreak->()->{$w} <=> $tiebreak->()->{$y})
         ||
-    ($self->tiebreak->{$x} <=> $self->tiebreak->{$z})
+    ($tiebreak->()->{$x} <=> $tiebreak->()->{$z})
   };
 
   @majorities = reverse sort $compare_majority @majorities;
@@ -249,7 +232,7 @@ sub compute {
     my @winners = grep { !$dominated->{$_} || !keys %{$dominated->{$_}} } keys %remaining;
     if (@winners > 1) {
       @winners = sort {
-        $self->tiebreak->{$a} <=> $self->tiebreak->{$b}
+        $tiebreak->()->{$a} <=> $tiebreak->()->{$b}
       } @winners;
     }
     my $selected = $winners[0];
