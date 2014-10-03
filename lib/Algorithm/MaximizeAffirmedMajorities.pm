@@ -5,6 +5,8 @@ package Algorithm::MaximizeAffirmedMajorities;
 
 use Moo;
 use Types::Standard qw(ArrayRef Map Tuple Str Int);
+use List::Util 'shuffle';
+use Storable 'dclone';
 
 has 'candidates' => (
   is => 'rw',
@@ -55,37 +57,124 @@ sub vote {
   $self->_clear_tiebreak;
 }
 
+sub _ballot_to_preferences {
+  my ($self, $ballot) = @_;
+  my @ret;
+  my %remaining;
+  $remaining{$_} = 1 for @{ $self->candidates };
+
+  for my $set (@$ballot) {
+    my @candidates = ref($set) eq 'ARRAY' ? @$set : $set;
+    delete $remaining{$_} for @candidates;
+    for my $candidate (@candidates) {
+      for my $loser (keys %remaining) {
+        push @ret, [ $candidate, $loser ];
+      }
+    }
+  }
+
+  return @ret;
+}
+
+
 sub _compute_blocs {
   my ($self) = @_;
   my %blocs;
   for my $bundle (@{ $self->bundles}) {
     my ($count, $ballot) = @$bundle;
-    my %remaining;
-    $remaining{$_} = 1 for @{ $self->candidates };
-
-    for my $set (@$ballot) {
-      my @candidates = ref($set) eq 'ARRAY' ? @$set : $set;
-      delete $remaining{$_} for @candidates;
-      for my $candidate (@candidates) {
-        for my $loser (keys %remaining) {
-          $blocs{$candidate}{$loser} += $count;
-        }
-      }
+    my @preferences = $self->_ballot_to_preferences($ballot);
+    for my $preference (@preferences) {
+      my ($winner, $loser) = @$preference;
+      $blocs{$winner}{$loser} += $count;
     }
   }
 
   return \%blocs;
 }
 
-sub _compute_tiebreak {
-  use Carp 'cluck';
-  cluck "tiebreak";
+sub _shuffled_ballots {
   my ($self) = @_;
-  my %ret;
-  my $i = 1;
+  my @ballots = map {
+    ($_->[1]) x $_->[0]
+  } @{ $self->bundles };
+  @ballots = shuffle @ballots;
+  return @ballots;
+}
 
-  for my $candidate (sort @{ $self->candidates }) {
-    $ret{$candidate} = $i++;
+sub _compute_tiebreak {
+  my ($self) = @_;
+  my $candidates = $self->candidates;
+  my (%exclude, %ret);
+  my $dominates = {};
+  my $done;
+  BALLOT: for my $ballot ($self->_shuffled_ballots) {
+    my @preferences = $self->_ballot_to_preferences($ballot);
+    PREFERENCE: for my $preference (@preferences) {
+      my ($winner, $loser) = @$preference;
+      next if $dominates->{$winner}{$loser} || $dominates->{$loser}{$winner};
+
+      my $temp = dclone($dominates);
+      my @work = ($preference);
+
+      while (@work) {
+        my ($w, $l) = @{ shift @work };
+        next if $temp->{$w}{$l};
+        if ($w eq $l) {
+          warn "Not adding $winner > $loser to RVH because it would create a cycle\n";
+          next PREFERENCE;
+        }
+        $temp->{$w}{$l} = 1;
+        for my $candidate (@$candidates) {
+          if ($temp->{$l}{$candidate}) {
+            push @work, [$w, $candidate];
+          }
+          if ($temp->{$candidate}{$w}) {
+            push @work, [$candidate, $l];
+          }
+        }
+      }
+      # Added without creating a cycle, commit.
+      warn "Adding $winner > $loser to RVH\n";
+      $dominates = $temp;
+      $done = 1;
+      for my $c1 (@$candidates) {
+        for my $c2 (@$candidates) {
+          unless ($c1 eq $c2 || $dominates->{$c1}{$c2} || $dominates->{$c2}{$c1}) {
+            $done = 0;
+            next PREFERENCE;
+          }
+        }
+      }
+      last PREFERENCE if $done;
+    }
+    last BALLOT if $done;
+  }
+
+  if (!$done) {
+    warn "WARNING: ran out of ballots without resolving some RVH preference, will choose randomly."
+  }
+
+  my $dominated;
+  for my $winner (keys %$dominates) {
+    for my $loser (keys %{ $dominates->{$winner}}) {
+      $dominated->{$loser}{$winner} = 1 if $dominates->{$winner}{$loser};
+    }
+  }
+
+  my %remaining;
+  $remaining{$_} = 1 for @$candidates;
+  my $i = 1;
+  while (keys %remaining) {
+    my @top = grep { !$dominated->{$_} || !keys %{ $dominated->{$_} } } keys %remaining;
+    # Unless we ran out of ballots, @top only has one item. If we *did* run out of ballots,
+    # there's a fundamental tie so break it randomly
+    for my $selected (shuffle @top) {
+      $ret{$selected} = $i++;
+      for my $candidate (@$candidates) {
+        delete $dominated->{$candidate}{$selected};
+      }
+      delete $remaining{$selected};
+    }
   }
   return \%ret;
 }
