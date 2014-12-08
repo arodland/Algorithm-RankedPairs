@@ -177,8 +177,7 @@ sub _compute_tiebreak {
 }
 
 sub compute {
-  my $self = shift;
-  my $break_ties = 0;
+  my ($self, $break_ties) = @_;
 
   my $candidates = $self->candidates;
   my $blocs = $self->_compute_blocs;
@@ -197,6 +196,14 @@ sub compute {
     return $tb ||= $self->_compute_tiebreak($break_ties);
   };
 
+  my $compare_majority_no_tiebreak = sub {
+    my ($x, $y, $z, $w) = (@$a, @$b);
+    return
+      ($blocs->{$x}{$y} <=> $blocs->{$z}{$w})
+          ||
+      ($blocs->{$w}{$z} <=> $blocs->{$y}{$x});
+  };
+
   my $compare_majority = sub {
     my ($x, $y, $z, $w) = (@$a, @$b);
     return
@@ -209,10 +216,10 @@ sub compute {
       ($tiebreak->()->{$x} <=> $tiebreak->()->{$z});
   };
 
-  @majorities = reverse sort $compare_majority @majorities;
+  @majorities = reverse sort $compare_majority_no_tiebreak @majorities;
 
   my $affirm;
-  my ($dominates, $dominated);
+  my ($dominates, $dominated) = ({}, {});
 
   $affirm = sub {
     my ($winner, $loser, $reason) = @_;
@@ -235,15 +242,49 @@ sub compute {
     }
   };
 
-  for my $majority (@majorities) {
-    my ($winner, $loser) = @$majority;
-    my $size = $blocs->{$winner}{$loser};
+  while (@majorities) {
+    my @chunk;
+    push @chunk, shift @majorities;
+    while (@majorities && ($a = $majorities[-1], $b = $chunk[0], ($compare_majority_no_tiebreak->() == 0))) {
+      push @chunk, shift @majorities;
+    }
 
-    unless ($dominates->{$winner}{$loser}) { # Don't re-affirm what we already know
-      if ($dominates->{$loser}{$winner}) {
-        log_debug { "Rejecting $winner over $loser ($size votes) because it would create a cycle.\n" };
-      } else {
-        $affirm->($winner, $loser);
+    my $temp1 = dclone $dominates;
+    my $temp2 = dclone $dominated;
+    my $tied = 0;
+
+    MAJORITY: for my $majority (@chunk) {
+      my ($winner, $loser) = @$majority;
+      my $size = $blocs->{$winner}{$loser};
+
+      unless ($dominates->{$winner}{$loser}) { # Don't re-affirm what we already know
+        if ($dominates->{$loser}{$winner}) {
+          # Cycle found in equal, bail out of the whole thing
+          $dominates = $temp1;
+          $dominated = $temp2;
+          $tied = 1;
+          last MAJORITY;
+        } else {
+          $affirm->($winner, $loser);
+        }
+      }
+
+    }
+
+    if ($tied && $break_ties) {
+      log_debug { "Breaking a tie.\n" };
+      @chunk = sort $compare_majority @chunk;
+      for my $majority (@chunk) {
+        my ($winner, $loser) = @$majority;
+        my $size = $blocs->{$winner}{$loser};
+
+        unless ($dominates->{$winner}{$loser}) { # Don't re-affirm what we already know
+          if ($dominates->{$loser}{$winner}) {
+            log_debug { "Not affirming $winner over $loser because it would create a cycle.\n" };
+          } else {
+            $affirm->($winner, $loser);
+          }
+        }
       }
     }
   }
@@ -251,9 +292,9 @@ sub compute {
   my (%remaining, @ranking);
   $remaining{$_} = 1 for @$candidates;
 
-  my $prev;
   my $i = 0;
   my $j;
+  my $ties = 0;
 
   while (keys %remaining) {
     my @winners = grep { !$dominated->{$_} || !keys %{$dominated->{$_}} } keys %remaining;
@@ -263,9 +304,22 @@ sub compute {
       } @winners;
     }
 
+    my $prev;
     for my $selected (@winners) {
       $i++;
-      $j = $i if !defined $prev or ($break_ties and !defined $tb or $tb->{$selected} != $tb->{$prev});
+      if (
+        !defined($prev)
+        or (
+          $break_ties
+          and defined($tb)
+          and $tb->{$selected} != $tb->{$prev}
+        )
+      ) {
+        $j = $i;
+      } else {
+        $ties = 1;
+      }
+
       log_debug { "Selected $selected\n" };
 
       push @ranking, [$selected, $j];
@@ -277,7 +331,7 @@ sub compute {
       $prev = $selected;
     }
   }
-  return \@ranking;
+  return (\@ranking, $ties);
 }
 
 1;

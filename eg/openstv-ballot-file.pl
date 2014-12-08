@@ -46,9 +46,25 @@ while (<$fh>) {
   $mam->vote(\@ballot, $count);
 }
 
-my $result = $mam->compute;
+my ($result, $ties) = $mam->compute;
 
 print "=== RESULTS ===\n";
 for my $ranking (@$result) {
   printf "%3d: %s\n", $ranking->[1], $ranking->[0];
 }
+
+if ($ties) {
+  print "\nNOTE: There were some ties, re-running with random voter tiebreaking.\n";
+
+  my ($result, $ties) = $mam->compute(1);
+  print "=== RESULTS ===\n";
+  for my $ranking (@$result) {
+    printf "%3d: %s\n", $ranking->[1], $ranking->[0];
+  }
+
+  if ($ties) {
+    print "\nWARNING: Even that didn't do it! There are some unresolved preferences.\n";
+  }
+}
+
+
