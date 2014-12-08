@@ -48,8 +48,7 @@ while (<$fh>) {
 
 my $result = $mam->compute;
 
-my $i = 1;
 print "=== RESULTS ===\n";
-for my $candidate (@$result) {
-  printf "%3d: %s\n", $i++, $candidate;
+for my $ranking (@$result) {
+  printf "%3d: %s\n", $ranking->[1], $ranking->[0];
 }

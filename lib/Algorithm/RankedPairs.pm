@@ -91,11 +91,18 @@ sub _shuffled_ballots {
 }
 
 sub _compute_tiebreak {
-  my ($self) = @_;
+  my ($self, $break_ties) = @_;
   my $candidates = $self->candidates;
   my (%exclude, %ret);
   my $dominates = {};
   my $done;
+
+  if (!$break_ties) {
+    return +{
+      map { ($_ => 0 ) } @$candidates
+    };
+  }
+
   BALLOT: for my $ballot ($self->_shuffled_ballots) {
     my @preferences = $self->_ballot_to_preferences($ballot);
     PREFERENCE: for my $preference (@preferences) {
@@ -109,7 +116,7 @@ sub _compute_tiebreak {
         my ($w, $l) = @{ shift @work };
         next if $temp->{$w}{$l};
         if ($w eq $l) {
-          log_debug { "Not adding $winner > $loser to RVH because it would create a cycle." };
+          log_debug { "Not adding $winner > $loser to RVH because it would create a cycle.\n" };
           next PREFERENCE;
         }
         $temp->{$w}{$l} = 1;
@@ -123,7 +130,7 @@ sub _compute_tiebreak {
         }
       }
       # Added without creating a cycle, commit.
-      log_debug { "Adding $winner > $loser to RVH." };
+      log_debug { "Adding $winner > $loser to RVH.\n" };
       $dominates = $temp;
       $done = 1;
       for my $c1 (@$candidates) {
@@ -140,7 +147,7 @@ sub _compute_tiebreak {
   }
 
   if (!$done) {
-    log_warning { "WARNING: ran out of ballots without resolving some RVH preference, will choose randomly." };
+    log_warn { "WARNING: ran out of ballots without resolving some RVH preference.\n" };
   }
 
   my $dominated;
@@ -152,13 +159,14 @@ sub _compute_tiebreak {
 
   my %remaining;
   $remaining{$_} = 1 for @$candidates;
-  my $i = 1;
+  my $i = 0;
   while (keys %remaining) {
     my @top = grep { !$dominated->{$_} || !keys %{ $dominated->{$_} } } keys %remaining;
     # Unless we ran out of ballots, @top only has one item. If we *did* run out of ballots,
-    # there's a fundamental tie so break it randomly
-    for my $selected (shuffle @top) {
-      $ret{$selected} = $i++;
+    # there's a fundamental tie, so give them all the same rank.
+    $i++;
+    for my $selected (@top) {
+      $ret{$selected} = $i;
       for my $candidate (@$candidates) {
         delete $dominated->{$candidate}{$selected};
       }
@@ -170,6 +178,8 @@ sub _compute_tiebreak {
 
 sub compute {
   my $self = shift;
+  my $break_ties = 0;
+
   my $candidates = $self->candidates;
   my $blocs = $self->_compute_blocs;
 
@@ -184,18 +194,19 @@ sub compute {
 
   my $tb;
   my $tiebreak = sub {
-    return ($tb ||= $self->_compute_tiebreak);
+    return $tb ||= $self->_compute_tiebreak($break_ties);
   };
 
   my $compare_majority = sub {
     my ($x, $y, $z, $w) = (@$a, @$b);
-    ($blocs->{$x}{$y} <=> $blocs->{$z}{$w})
-        ||
-    ($blocs->{$w}{$z} <=> $blocs->{$y}{$x})
-        ||
-    ($tiebreak->()->{$w} <=> $tiebreak->()->{$y})
-        ||
-    ($tiebreak->()->{$x} <=> $tiebreak->()->{$z})
+    return
+      ($blocs->{$x}{$y} <=> $blocs->{$z}{$w})
+          ||
+      ($blocs->{$w}{$z} <=> $blocs->{$y}{$x})
+          ||
+      ($tiebreak->()->{$w} <=> $tiebreak->()->{$y})
+          ||
+      ($tiebreak->()->{$x} <=> $tiebreak->()->{$z});
   };
 
   @majorities = reverse sort $compare_majority @majorities;
@@ -208,7 +219,7 @@ sub compute {
     my $size = $blocs->{$winner}{$loser};
     $reason ||= "$size votes";
 
-    log_debug { "Affirming $winner over $loser ($reason)" };
+    log_debug { "Affirming $winner over $loser ($reason).\n" };
     $dominates->{$winner}{$loser} = 1;
     $dominated->{$loser}{$winner} = 1;
 
@@ -230,7 +241,7 @@ sub compute {
 
     unless ($dominates->{$winner}{$loser}) { # Don't re-affirm what we already know
       if ($dominates->{$loser}{$winner}) {
-        log_debug { "Rejecting $winner over $loser ($size votes) because it would create a cycle." };
+        log_debug { "Rejecting $winner over $loser ($size votes) because it would create a cycle.\n" };
       } else {
         $affirm->($winner, $loser);
       }
@@ -239,6 +250,11 @@ sub compute {
 
   my (%remaining, @ranking);
   $remaining{$_} = 1 for @$candidates;
+
+  my $prev;
+  my $i = 0;
+  my $j;
+
   while (keys %remaining) {
     my @winners = grep { !$dominated->{$_} || !keys %{$dominated->{$_}} } keys %remaining;
     if (@winners > 1) {
@@ -246,13 +262,20 @@ sub compute {
         $tiebreak->()->{$a} <=> $tiebreak->()->{$b}
       } @winners;
     }
-    my $selected = $winners[0];
-    log_debug { "Selected $selected" };
-    push @ranking, $selected;
-    for my $candidate (@$candidates) {
-      delete $dominated->{$candidate}{$selected};
+
+    for my $selected (@winners) {
+      $i++;
+      $j = $i if !defined $prev or ($break_ties and !defined $tb or $tb->{$selected} != $tb->{$prev});
+      log_debug { "Selected $selected\n" };
+
+      push @ranking, [$selected, $j];
+
+      for my $candidate (@$candidates) {
+        delete $dominated->{$candidate}{$selected};
+      }
+      delete $remaining{$selected};
+      $prev = $selected;
     }
-    delete $remaining{$selected};
   }
   return \@ranking;
 }
