@@ -224,7 +224,8 @@ sub compute {
   $affirm = sub {
     my ($winner, $loser, $reason) = @_;
     my $size = $blocs->{$winner}{$loser};
-    $reason ||= "$size votes";
+    my $vs = $blocs->{$loser}{$winner};
+    $reason ||= "$size votes vs $vs";
 
     log_debug { "Affirming $winner over $loser ($reason).\n" };
     $dominates->{$winner}{$loser} = 1;
@@ -249,6 +250,8 @@ sub compute {
       push @chunk, shift @majorities;
     }
 
+    log_debug { "Start chunk\n" };
+
     my $temp1 = dclone $dominates;
     my $temp2 = dclone $dominated;
     my $tied = 0;
@@ -259,6 +262,7 @@ sub compute {
 
       unless ($dominates->{$winner}{$loser}) { # Don't re-affirm what we already know
         if ($dominates->{$loser}{$winner}) {
+          log_debug { "Not affirming $winner over $loser, would create a cycle.\n" };
           # Cycle found in equal, bail out of the whole thing
           $dominates = $temp1;
           $dominated = $temp2;
@@ -298,6 +302,7 @@ sub compute {
 
   while (keys %remaining) {
     my @winners = grep { !$dominated->{$_} || !keys %{$dominated->{$_}} } keys %remaining;
+    log_debug { "Winners set: @winners\n" };
     if (@winners > 1) {
       @winners = sort {
         $tiebreak->()->{$a} <=> $tiebreak->()->{$b}

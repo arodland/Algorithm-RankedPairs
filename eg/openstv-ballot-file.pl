@@ -28,7 +28,8 @@ while (<$fh>) {
   chomp;
   s/^\([^)]+\)\s*//;
   my ($count, @ballot) = split " ", $_;
-  pop @ballot;
+  #  pop @ballot;
+  @ballot = grep { $_ != 0 } @ballot;
 
   for my $item (@ballot) {
     if ($item eq "-") {
